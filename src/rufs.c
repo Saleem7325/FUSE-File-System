@@ -31,6 +31,9 @@
 /* The number of blocks needed to store MAX_INUM inodes in the inode region of disk */
 #define INODE_BLOCKS ((INODE_BYTES % BLOCK_SIZE) == 0 ? (INODE_BYTES / BLOCK_SIZE) : ((INODE_BYTES / BLOCK_SIZE) + 1))
 
+/* The number of Inodes per block */
+#define INODES (BLOCK_SIZE / sizeof(struct inode))
+
 /* The number of chars to store in inode_bitmap */
 #define IBMAP_BYTES ((MAX_INUM % 8) == 0 ? (MAX_INUM / 8) : ((MAX_INUM / 8) + 1))
 
@@ -193,6 +196,14 @@ int init_inode_region(){
 	return 0;
 }
 
+int get_inode_block(uint16_t ino){
+	return ((ino / INODES) + INODE_IDX);
+}
+
+int get_inode_offset(uint16_t ino){
+	return (ino % INODES);
+}
+
 /*_______________________RUFS FUNCTIONS_______________________*/
 
 /* 
@@ -261,24 +272,37 @@ int get_avail_blkno() {
  * inode operations
  */
 int readi(uint16_t ino, struct inode *inode) {
-
   // Step 1: Get the inode's on-disk block number
-
   // Step 2: Get offset of the inode in the inode on-disk block
-
   // Step 3: Read the block from disk and then copy into inode structure
+	int block = get_inode_block(ino);
+	int offset = get_inode_offset(ino);
 
+	if(bio_read(block, inode_blk) < 0){
+		return -1;
+	}
+
+	memcpy(inode, &inode_blk[offset], sizeof(struct inode));
 	return 0;
 }
 
 int writei(uint16_t ino, struct inode *inode) {
-
 	// Step 1: Get the block number where this inode resides on disk
-	
 	// Step 2: Get the offset in the block where this inode resides on disk
+	// Step 3: Write inode to disk
+ 	int block = get_inode_block(ino);
+	int offset = get_inode_offset(ino);
 
-	// Step 3: Write inode to disk 
+	if(bio_read(block, inode_blk) < 0){
+		return -1;
+	}
 
+	memcpy(&inode_blk[offset], inode, sizeof(struct inode));
+
+	if(bio_write(block, inode_blk) < 0){
+		return -1;
+	}
+	
 	return 0;
 }
 

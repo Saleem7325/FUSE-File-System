@@ -22,9 +22,27 @@
 #include "block.h"
 #include "rufs.h"
 
+/* The total number of blocks on disk */
+#define BLOCKS (DISK_SIZE / BLOCK_SIZE)
+
+/* The number of bytes needed to store MAX_INUM inodes in the inode region of disk */
+#define INODE_BYTES (MAX_INUM * sizeof(struct inode))
+
+/* The number of blocks needed to store MAX_INUM inodes in the inode region of disk */
+#define INODE_BLOCKS (INODE_BYTES % BLOCK_SIZE) == 0 ? (INODE_BYTES / BLOCK_SIZE) : ((INODE_BYTES / BLOCK_SIZE) + 1)
+
+/* The number of chars to store in inode_bitmap */
+#define IBMAP_BYTES (MAX_INUM % 8) == 0 ? (MAX_INUM / 8) : ((MAX_INUM / 8) + 1)
+
+/* The number of chars to store in data_bitmap */
+#define DBMAP_BYTES (MAX_DNUM % 8) == 0 ? (MAX_DNUM / 8) : ((MAX_DNUM / 8) + 1)
+
 char diskfile_path[PATH_MAX];
 
-// Declare your in-memory data structures here
+/* Declare your in-memory data structures here */
+struct superblock *su_blk = NULL;
+bitmap_t inode_bmap = NULL;
+bitmap_t blk_bmap = NULL;
 
 /* 
  * Get available inode number from bitmap
@@ -138,17 +156,46 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
  * Make file system
  */
 int rufs_mkfs() {
-
 	// Call dev_init() to initialize (Create) Diskfile
+	dev_init(diskfile_path);
 
 	// write superblock information
+	su_blk = (struct superblock *)malloc(BLOCK_SIZE);	
+	memset(su_blk, '\0', BLOCK_SIZE);
+
+	su_blk->magic_num = MAGIC_NUM;
+	su_blk->max_inum = MAX_INUM;
+	su_blk->max_dnum = MAX_DNUM;
+	su_blk->i_bitmap_blk = 1;
+	su_blk->d_bitmap_blk = 2;
+	su_blk->i_start_blk = 3;
+	su_blk->d_start_blk = su_blk->i_start_blk + INODE_BLOCKS;
+	bio_write(0, su_blk);
 
 	// initialize inode bitmap
+	inode_bmap = (bitmap_t)malloc(BLOCK_SIZE);
+	memset(inode_bmap, '\0', BLOCK_SIZE);
+	bio_write(su_blk->i_bitmap_blk, su_blk);
 
 	// initialize data block bitmap
+	blk_bmap = (bitmap_t)malloc(BLOCK_SIZE);
+	memset(blk_bmap, '\0', BLOCK_SIZE);
+
+	// Setting bits 0, 1, 2 for super block, inode bitmap, block bitmap respectively   
+	set_bitmap(blk_bmap, 0);
+	set_bitmap(blk_bmap, su_blk->i_bitmap_blk);
+	set_bitmap(blk_bmap, su_blk->d_bitmap_blk);
+
+	// Setting bits for inode region
+	uint32_t count = su_blk->i_start_blk;
+	while(count < su_blk->d_start_blk){
+		set_bitmap(blk_bmap, count++);
+	}
+
+	// writing data block bit map to data block bit map region
+	bio_write(su_blk->d_bitmap_blk, blk_bmap);
 
 	// update bitmap information for root directory
-
 	// update inode for root directory
 
 	return 0;
@@ -159,11 +206,20 @@ int rufs_mkfs() {
  * FUSE file operations
  */
 static void *rufs_init(struct fuse_conn_info *conn) {
-
 	// Step 1a: If disk file is not found, call mkfs
+	if(disk_file == -1){
+		rufs_mkfs();
+	}
 
-  // Step 1b: If disk file is found, just initialize in-memory data structures
-  // and read superblock from disk
+	// Step 1b: If disk file is found, just initialize in-memory data structures and read superblock from disk
+	if(dev_open(diskfile_path) == -1){
+		return NULL;
+	}
+
+	// read super block information
+	su_blk = (struct superblock *)malloc(BLOCK_SIZE);	
+	memset(su_blk, '\0', BLOCK_SIZE);
+  	bio_read(0, su_blk);
 
 	return NULL;
 }

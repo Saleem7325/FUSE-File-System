@@ -23,53 +23,238 @@
 #include "rufs.h"
 
 /* The total number of blocks on disk */
-#define BLOCKS (DISK_SIZE / BLOCK_SIZE)
+// #define BLOCKS (DISK_SIZE / BLOCK_SIZE)
 
 /* The number of bytes needed to store MAX_INUM inodes in the inode region of disk */
 #define INODE_BYTES (MAX_INUM * sizeof(struct inode))
 
 /* The number of blocks needed to store MAX_INUM inodes in the inode region of disk */
-#define INODE_BLOCKS (INODE_BYTES % BLOCK_SIZE) == 0 ? (INODE_BYTES / BLOCK_SIZE) : ((INODE_BYTES / BLOCK_SIZE) + 1)
+#define INODE_BLOCKS ((INODE_BYTES % BLOCK_SIZE) == 0 ? (INODE_BYTES / BLOCK_SIZE) : ((INODE_BYTES / BLOCK_SIZE) + 1))
 
 /* The number of chars to store in inode_bitmap */
-#define IBMAP_BYTES (MAX_INUM % 8) == 0 ? (MAX_INUM / 8) : ((MAX_INUM / 8) + 1)
+#define IBMAP_BYTES ((MAX_INUM % 8) == 0 ? (MAX_INUM / 8) : ((MAX_INUM / 8) + 1))
 
 /* The number of chars to store in data_bitmap */
-#define DBMAP_BYTES (MAX_DNUM % 8) == 0 ? (MAX_DNUM / 8) : ((MAX_DNUM / 8) + 1)
+#define DBMAP_BYTES ((MAX_DNUM % 8) == 0 ? (MAX_DNUM / 8) : ((MAX_DNUM / 8) + 1))
+
+/* Index of super block */
+#define SU_BLK_IDX 0
+
+/* Index of Inode bitmap block */
+#define IBMAP_IDX 1
+
+/* Index of data bitmap block */
+#define DBMAP_IDX 2
+
+/* Index of start of Inode region */
+#define INODE_IDX 3
+
+/* Index of start of data region */
+#define DATA_IDX (INODE_IDX + INODE_BLOCKS)
 
 char diskfile_path[PATH_MAX];
 
 /* Declare your in-memory data structures here */
+
+/* Pointer to block, for writing to, reading from, and initializing super block region of disk */
 struct superblock *su_blk = NULL;
+
+/* Pointer to block, for writing to, reading from, and initializing an Inode block in Inode region of disk*/
+struct inode *inode_blk = NULL;
+
+/* Pointer to block, for writing to, reading from, and initializing Inode bitmap region of disk */
 bitmap_t inode_bmap = NULL;
+
+/* Pointer to block, for writing to, reading from, and initializing data block bitmap region of disk */
 bitmap_t blk_bmap = NULL;
+
+/*_______________________HELPER FUNCTIONS_______________________*/
+
+int get_avail_ino();
+int get_avail_blkno();
+
+int init_data_structures(){
+	su_blk = (struct superblock *)malloc(BLOCK_SIZE);
+	if(!su_blk){
+		perror("Malloc failure: super block initialization\n");
+		return -1;
+	}
+
+	inode_bmap = (bitmap_t)malloc(BLOCK_SIZE);
+	if(!inode_bmap){
+		perror("Malloc failure: Inode bitmap initialization\n");
+		return -1;
+	}
+
+	blk_bmap = (bitmap_t)malloc(BLOCK_SIZE);
+	if(!blk_bmap){
+		perror("Malloc failure: data block bitmap initialization\n");
+		return -1;
+	}
+
+	inode_blk = (struct inode *)malloc(BLOCK_SIZE);
+	if(!inode_blk){
+		perror("Malloc failure: inode block initialization\n");
+		return -1;
+	}
+
+	return 1;
+}
+
+int init_superblock(){
+	su_blk = (struct superblock *)malloc(BLOCK_SIZE);
+	if(!su_blk){
+		perror("Malloc failure: super block initialization\n");
+		return -1;
+	}
+
+	memset(su_blk, '\0', BLOCK_SIZE);
+	su_blk->magic_num = MAGIC_NUM;
+	su_blk->max_inum = MAX_INUM;
+	su_blk->max_dnum = MAX_DNUM;
+	su_blk->i_bitmap_blk = IBMAP_IDX;
+	su_blk->d_bitmap_blk = DBMAP_IDX;
+	su_blk->i_start_blk = INODE_IDX;
+	su_blk->d_start_blk = DATA_IDX;
+
+	return bio_write(0, su_blk);
+}
+
+int init_inode_bitmap(){
+	inode_bmap = (bitmap_t)malloc(BLOCK_SIZE);
+	if(!inode_bmap){
+		perror("Malloc failure: Inode bitmap initialization\n");
+		return -1;
+	}
+
+	memset(inode_bmap, '\0', BLOCK_SIZE);
+	return bio_write(su_blk->i_bitmap_blk, inode_bmap);
+}
+
+int init_data_bitmap(){
+	blk_bmap = (bitmap_t)malloc(BLOCK_SIZE);
+	if(!blk_bmap){
+		perror("Malloc failure: data block bitmap initialization\n");
+		return -1;
+	}
+	
+	memset(blk_bmap, '\0', BLOCK_SIZE);
+
+	// Setting bits for super block, inode bitmap, block bitmap  
+	set_bitmap(blk_bmap, SU_BLK_IDX);
+	set_bitmap(blk_bmap, su_blk->i_bitmap_blk);
+	set_bitmap(blk_bmap, su_blk->d_bitmap_blk);
+
+	// Setting bits for inode region
+	uint32_t count = su_blk->i_start_blk;
+	while(count < su_blk->d_start_blk){
+		set_bitmap(blk_bmap, count++);
+	}
+
+	return bio_write(su_blk->d_bitmap_blk, blk_bmap);
+}
+
+/*
+ * Initializes every inode entry to NULL in all inode region blocks
+ * Initializes first inode to root
+*/
+int init_inode_region(){
+	inode_blk = (struct inode *)malloc(BLOCK_SIZE);
+	if(!inode_blk){
+		perror("Malloc failure: inode block initialization\n");
+		return -1;
+	}
+	memset(inode_blk, '\0', BLOCK_SIZE);
+
+	int ino = get_avail_ino();
+	int blk_no = get_avail_blkno();
+	if(ino < 0 || blk_no < 0){
+		return -1;
+	}
+
+	inode_blk[ino].ino = ino;
+	inode_blk[ino].valid = 1;
+	inode_blk[ino].size = 0;
+	inode_blk[ino].type = S_IFDIR;
+	inode_blk[ino].direct_ptr[0] = blk_no;
+
+	if(bio_write(INODE_IDX, inode_blk) < 0){
+		return -1;
+	}
+	memset(&inode_blk[ino], '\0', sizeof(struct inode));
+
+	int count = INODE_IDX + 1;
+	while(count < INODE_BLOCKS){
+		if(bio_write(count++, inode_blk) < 0){
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
+/*_______________________RUFS FUNCTIONS_______________________*/
 
 /* 
  * Get available inode number from bitmap
  */
 int get_avail_ino() {
-
 	// Step 1: Read inode bitmap from disk
-	
+	if(bio_read(IBMAP_IDX, inode_bmap) < 0){
+		return -1;
+	}
+
 	// Step 2: Traverse inode bitmap to find an available slot
+	int ino = -1;
+	for(int i = 0; i < MAX_INUM; i++){
+		if(get_bitmap(inode_bmap, i) == 0){
+			ino = i;
+			break;
+		}
+	}
 
-	// Step 3: Update inode bitmap and write to disk 
+	// Step 3: Update inode bitmap and write to disk
+	if(ino == -1){
+		return -1;
+	}
 
-	return 0;
+	set_bitmap(inode_bmap, ino);
+	if(bio_write(IBMAP_IDX, inode_bmap) < 0){
+		return -1;
+	}
+
+	return ino;
 }
 
 /* 
  * Get available data block number from bitmap
  */
 int get_avail_blkno() {
-
 	// Step 1: Read data block bitmap from disk
+	if(bio_read(DBMAP_IDX, blk_bmap) < 0){
+		return -1;
+	}
 	
 	// Step 2: Traverse data block bitmap to find an available slot
+	int blk = -1;
+	for(int i = 0; i < MAX_DNUM; i++){
+		if(get_bitmap(blk_bmap, i) == 0){
+			blk = i;
+			break;
+		}
+	}
 
 	// Step 3: Update data block bitmap and write to disk 
+	if(blk == -1){
+		return -1;
+	}
 
-	return 0;
+	set_bitmap(blk_bmap, blk);
+	if(bio_write(DBMAP_IDX, blk_bmap) < 0){
+		return -1;
+	}
+
+	return blk;
 }
 
 /* 
@@ -160,43 +345,17 @@ int rufs_mkfs() {
 	dev_init(diskfile_path);
 
 	// write superblock information
-	su_blk = (struct superblock *)malloc(BLOCK_SIZE);	
-	memset(su_blk, '\0', BLOCK_SIZE);
-
-	su_blk->magic_num = MAGIC_NUM;
-	su_blk->max_inum = MAX_INUM;
-	su_blk->max_dnum = MAX_DNUM;
-	su_blk->i_bitmap_blk = 1;
-	su_blk->d_bitmap_blk = 2;
-	su_blk->i_start_blk = 3;
-	su_blk->d_start_blk = su_blk->i_start_blk + INODE_BLOCKS;
-	bio_write(0, su_blk);
-
 	// initialize inode bitmap
-	inode_bmap = (bitmap_t)malloc(BLOCK_SIZE);
-	memset(inode_bmap, '\0', BLOCK_SIZE);
-	bio_write(su_blk->i_bitmap_blk, su_blk);
-
 	// initialize data block bitmap
-	blk_bmap = (bitmap_t)malloc(BLOCK_SIZE);
-	memset(blk_bmap, '\0', BLOCK_SIZE);
-
-	// Setting bits 0, 1, 2 for super block, inode bitmap, block bitmap respectively   
-	set_bitmap(blk_bmap, 0);
-	set_bitmap(blk_bmap, su_blk->i_bitmap_blk);
-	set_bitmap(blk_bmap, su_blk->d_bitmap_blk);
-
-	// Setting bits for inode region
-	uint32_t count = su_blk->i_start_blk;
-	while(count < su_blk->d_start_blk){
-		set_bitmap(blk_bmap, count++);
-	}
-
-	// writing data block bit map to data block bit map region
-	bio_write(su_blk->d_bitmap_blk, blk_bmap);
-
 	// update bitmap information for root directory
 	// update inode for root directory
+	if(init_superblock() < 0 || 
+		init_inode_bitmap() < 0 || 
+		init_data_bitmap() < 0 || 
+		init_inode_region() < 0
+	){
+		return - 1;
+	}
 
 	return 0;
 }
@@ -207,16 +366,11 @@ int rufs_mkfs() {
  */
 static void *rufs_init(struct fuse_conn_info *conn) {
 	// Step 1a: If disk file is not found, call mkfs
-	// if(disk_file == -1){
-	// 	rufs_mkfs();
-	// }
-
 	// Step 1b: If disk file is found, just initialize in-memory data structures and read superblock from disk
 	if(dev_open(diskfile_path) == 0){
 		// read super block information
-		su_blk = (struct superblock *)malloc(BLOCK_SIZE);	
-		memset(su_blk, '\0', BLOCK_SIZE);
-		bio_read(0, su_blk);
+		init_data_structures();
+		bio_read(SU_BLK_IDX, su_blk);
 	}else{
 		rufs_mkfs();
 	}
@@ -225,11 +379,21 @@ static void *rufs_init(struct fuse_conn_info *conn) {
 }
 
 static void rufs_destroy(void *userdata) {
-
 	// Step 1: De-allocate in-memory data structures
-
 	// Step 2: Close diskfile
+	if(su_blk){
+		free(su_blk);
+	}
 
+	if(inode_bmap){
+		free(inode_bmap);
+	}
+
+	if(blk_bmap){
+		free(blk_bmap);
+	}
+
+	dev_close();
 }
 
 static int rufs_getattr(const char *path, struct stat *stbuf) {

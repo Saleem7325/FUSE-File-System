@@ -207,19 +207,19 @@ int rufs_mkfs() {
  */
 static void *rufs_init(struct fuse_conn_info *conn) {
 	// Step 1a: If disk file is not found, call mkfs
-	if(disk_file == -1){
-		rufs_mkfs();
-	}
+	// if(disk_file == -1){
+	// 	rufs_mkfs();
+	// }
 
 	// Step 1b: If disk file is found, just initialize in-memory data structures and read superblock from disk
-	if(dev_open(diskfile_path) == -1){
-		return NULL;
+	if(dev_open(diskfile_path) == 0){
+		// read super block information
+		su_blk = (struct superblock *)malloc(BLOCK_SIZE);	
+		memset(su_blk, '\0', BLOCK_SIZE);
+		bio_read(0, su_blk);
+	}else{
+		rufs_mkfs();
 	}
-
-	// read super block information
-	su_blk = (struct superblock *)malloc(BLOCK_SIZE);	
-	memset(su_blk, '\0', BLOCK_SIZE);
-  	bio_read(0, su_blk);
 
 	return NULL;
 }

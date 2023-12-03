@@ -393,6 +393,10 @@ static void rufs_destroy(void *userdata) {
 		free(blk_bmap);
 	}
 
+	if(inode_blk){
+		free(inode_blk);
+	}
+
 	dev_close();
 }
 

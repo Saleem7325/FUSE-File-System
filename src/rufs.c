@@ -81,6 +81,23 @@ bitmap_t blk_bmap = NULL;
 int get_avail_ino();
 int get_avail_blkno();
 
+int format_dir_block(int blkno){
+	if(bio_read(blkno, data_blk) < 0){
+		return -1;
+	}
+
+	struct dirent * dirents = (struct dirent *)data_blk;
+	for(int i = 0; i < DIRENTS; i++){
+		dirents[i].valid = 0;
+	}
+
+	if(bio_write(blkno, data_blk) < 0){
+		return -1;
+	}
+
+	return 0;
+}
+
 int init_data_structures(){
 	su_blk = (struct superblock *)malloc(BLOCK_SIZE);
 	if(!su_blk){
@@ -183,6 +200,11 @@ int init_inode_region(){
 	int ino = get_avail_ino();
 	int blk_no = get_avail_blkno();
 	if(ino < 0 || blk_no < 0){
+		return -1;
+	}
+
+	if(format_dir_block(blk_no) < 0){
+		perror("Error formating root directory block\n");
 		return -1;
 	}
 
@@ -347,11 +369,11 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 	}
 
 	if(!dir_node.valid || dir_node.size <= 0 || dir_node.type != S_IFDIR){
-		return ENOENT;
+		return -1;
 	}
 
 	int index = 0;
-	while(dir_node.direct_ptr[index] != 0){
+	while(index < dir_node.size){
 		int blk_ptr = dir_node.direct_ptr[index++];
 		bio_read(blk_ptr, data_blk);
 
@@ -367,22 +389,86 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 		}
 	}
 
-	return  ENOENT;
+	return  -1;
+}
+
+int dir_contains(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t name_len){
+	int index = 0;
+	while(index < dir_inode.size){
+		int blk_ptr = dir_inode.direct_ptr[index++];
+		bio_read(blk_ptr, data_blk);
+
+		struct dirent *dir_ents = (struct dirent *)data_blk;
+
+		for(int i = 0; i < DIRENTS; i++){
+			if(!dir_ents[i].valid){
+				continue;
+			}else if(name_len == dir_ents[i].len && strcmp(dir_ents[i].name, fname) == 0){
+				return 1;
+			}
+		}
+	}
+
+	return 0;
+}
+
+int add_dir_entry(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t name_len){
+	int index = 0;
+
+	while(index < dir_inode.size){
+		int blk_ptr = dir_inode.direct_ptr[index++];
+		bio_read(blk_ptr, data_blk);
+		struct dirent *dir_ents = (struct dirent *)data_blk;
+
+		for(int i = 0; i < DIRENTS; i++){
+			if(!dir_ents[i].valid){
+				dir_ents[i].ino = f_ino;
+				dir_ents[i].valid = 1;
+				memcpy(&(dir_ents[i].name), fname, name_len);
+				// dir_ents[i].name = fname;
+				dir_ents[i].len = name_len;
+
+				return 1;
+			}else{
+				continue;
+			}
+		}
+	}
+
+	return 0;
 }
 
 int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t name_len) {
-
 	// Step 1: Read dir_inode's data block and check each directory entry of dir_inode
-	
 	// Step 2: Check if fname (directory name) is already used in other entries
-
 	// Step 3: Add directory entry in dir_inode's data block and write to disk
-
 	// Allocate a new data block for this directory if it does not exist
-
 	// Update directory inode
-
 	// Write directory entry
+	if(dir_contains(dir_inode, f_ino, fname, name_len) == 0){
+		return -1;
+	}
+
+	int size = dir_inode.size;
+	if(add_dir_entry(dir_inode, f_ino, fname, name_len) == 0 && size < 16){
+		int blk_no = get_avail_blkno();
+		if(blk_no == -1){
+			return -1;
+		}
+
+		format_dir_block(blk_no);
+		struct dirent *dir_ents = (struct dirent *)data_blk;
+
+		dir_ents[0].ino = f_ino;
+		dir_ents[0].valid = 1;
+		memcpy(&(dir_ents[0].name), fname, name_len);
+		// dir_ents[0].name = fname;
+		dir_ents[0].len = name_len;
+		bio_write(blk_no, data_blk);
+
+		dir_inode.direct_ptr[size] = blk_no;
+		dir_inode.size++;
+	}
 
 	return 0;
 }
@@ -423,9 +509,9 @@ int rufs_mkfs() {
 	// update inode for root directory
 	if(init_superblock() < 0 || 
 		init_inode_bitmap() < 0 || 
-		init_data_bitmap() < 0 || 
-		init_inode_region() < 0 ||
-		init_data_block() < 0
+		init_data_bitmap() < 0 ||
+		init_data_block() < 0 ||
+		init_inode_region() < 0
 	){
 		return - 1;
 	}

@@ -40,6 +40,8 @@
 /* The number of chars to store in data_bitmap */
 #define DBMAP_BYTES ((MAX_DNUM % 8) == 0 ? (MAX_DNUM / 8) : ((MAX_DNUM / 8) + 1))
 
+#define DIRENTS (BLOCK_SIZE / sizeof(struct dirent))
+
 /* Index of super block */
 #define SU_BLK_IDX 0
 
@@ -62,8 +64,11 @@ char diskfile_path[PATH_MAX];
 /* Pointer to block, for writing to, reading from, and initializing super block region of disk */
 struct superblock *su_blk = NULL;
 
-/* Pointer to block, for writing to, reading from, and initializing an Inode block in Inode region of disk*/
+/* Pointer to block, for writing to, reading from, and initializing an Inode block in Inode region of disk */
 struct inode *inode_blk = NULL;
+
+/* Pointer to block, for writing to, reading from, and initializing an data block in data region of disk */
+void *data_blk = NULL;
 
 /* Pointer to block, for writing to, reading from, and initializing Inode bitmap region of disk */
 bitmap_t inode_bmap = NULL;
@@ -101,7 +106,13 @@ int init_data_structures(){
 		return -1;
 	}
 
-	return 1;
+	data_blk = malloc(BLOCK_SIZE);
+	if(!data_blk){
+		perror("Malloc failure: data block initialization\n");
+		return -1;
+	}
+
+	return 0;
 }
 
 int init_superblock(){
@@ -177,9 +188,14 @@ int init_inode_region(){
 
 	inode_blk[ino].ino = ino;
 	inode_blk[ino].valid = 1;
-	inode_blk[ino].size = 0;
+	inode_blk[ino].size = 1;
 	inode_blk[ino].type = S_IFDIR;
+	inode_blk[ino].link = 0;
 	inode_blk[ino].direct_ptr[0] = blk_no;
+
+	for(int i = 1; i < 16; i++){
+		inode_blk[ino].direct_ptr[i] = 0;
+	}
 
 	if(bio_write(INODE_IDX, inode_blk) < 0){
 		return -1;
@@ -191,6 +207,16 @@ int init_inode_region(){
 		if(bio_write(count++, inode_blk) < 0){
 			return -1;
 		}
+	}
+
+	return 0;
+}
+
+int init_data_block(){
+	data_blk = malloc(BLOCK_SIZE);
+	if(!data_blk){
+		perror("Malloc failure: data block initialization\n");
+		return -1;
 	}
 
 	return 0;
@@ -311,15 +337,37 @@ int writei(uint16_t ino, struct inode *inode) {
  * directory operations
  */
 int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *dirent) {
+	// Step 1: Call readi() to get the inode using ino (inode number of current directory)
+	// Step 2: Get data block of current directory from inode
+	// Step 3: Read directory's data block and check each directory entry.
+	// If the name matches, then copy directory entry to dirent structure
+	struct inode dir_node;
+	if(readi(ino, &dir_node) < 0){
+		return -1;
+	}
 
-  // Step 1: Call readi() to get the inode using ino (inode number of current directory)
+	if(!dir_node.valid || dir_node.size <= 0 || dir_node.type != S_IFDIR){
+		return ENOENT;
+	}
 
-  // Step 2: Get data block of current directory from inode
+	int index = 0;
+	while(dir_node.direct_ptr[index] != 0){
+		int blk_ptr = dir_node.direct_ptr[index++];
+		bio_read(blk_ptr, data_blk);
 
-  // Step 3: Read directory's data block and check each directory entry.
-  //If the name matches, then copy directory entry to dirent structure
+		struct dirent *dir_ents = (struct dirent *)data_blk;
 
-	return 0;
+		for(int i = 0; i < DIRENTS; i++){
+			if(!dir_ents[i].valid){
+				continue;
+			}else if(name_len == dir_ents[i].len && strcmp(dir_ents[i].name, fname) == 0){
+				memcpy(dirent, &dir_ents[i], sizeof(struct dirent));
+				return 0;
+			}
+		}
+	}
+
+	return  ENOENT;
 }
 
 int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t name_len) {
@@ -376,7 +424,8 @@ int rufs_mkfs() {
 	if(init_superblock() < 0 || 
 		init_inode_bitmap() < 0 || 
 		init_data_bitmap() < 0 || 
-		init_inode_region() < 0
+		init_inode_region() < 0 ||
+		init_data_block() < 0
 	){
 		return - 1;
 	}
@@ -419,6 +468,10 @@ static void rufs_destroy(void *userdata) {
 
 	if(inode_blk){
 		free(inode_blk);
+	}
+
+	if(data_blk){
+		free(data_blk);
 	}
 
 	dev_close();

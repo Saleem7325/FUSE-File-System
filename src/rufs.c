@@ -42,6 +42,8 @@
 
 #define DIRENTS (BLOCK_SIZE / sizeof(struct dirent))
 
+#define PTRS (BLOCK_SIZE / sizeof(int))
+
 /* Index of super block */
 #define SU_BLK_IDX 0
 
@@ -67,8 +69,11 @@ struct superblock *su_blk = NULL;
 /* Pointer to block, for writing to, reading from, and initializing an Inode block in Inode region of disk */
 struct inode *inode_blk = NULL;
 
-/* Pointer to block, for writing to, reading from, and initializing an data block in data region of disk */
+/* Pointer to block, for writing to, reading from, and initializing a data block in data region of disk */
 void *data_blk = NULL;
+
+/* Pointer to block, for writing to, reading from, and initializing an indirect pointer block in data region of disk */
+void *ptr_blk = NULL;
 
 /* Pointer to block, for writing to, reading from, and initializing Inode bitmap region of disk */
 bitmap_t inode_bmap = NULL;
@@ -81,6 +86,18 @@ bitmap_t blk_bmap = NULL;
 int get_avail_ino();
 int get_avail_blkno();
 
+void print_macros(){
+	printf("\n______________________MACROS______________________\n");
+	printf("Super block index: %d\n", SU_BLK_IDX);
+	printf("Inode bitmap index: %d\n", IBMAP_IDX);
+	printf("Data block bitmap index: %d\n", DBMAP_IDX);
+	printf("Inodes region index: %d\n", INODE_IDX);
+	printf("Inode blocks: %ld\n", INODE_BLOCKS);
+	printf("Inodes per block: %ld\n", INODES);
+	printf("Data region index: %ld\n", DATA_IDX);
+	printf("____________________END MACROS____________________\n\n");
+}
+
 int format_dir_block(int blkno){
 	if(bio_read(blkno, data_blk) < 0){
 		return -1;
@@ -92,6 +109,23 @@ int format_dir_block(int blkno){
 	}
 
 	if(bio_write(blkno, data_blk) < 0){
+		return -1;
+	}
+
+	return 0;
+}
+
+int format_ptr_block(int blkno){
+	if(bio_read(blkno, ptr_blk) < 0){
+		return -1;
+	}
+
+	int *ptrs = (int *)ptr_blk;
+	for(int i = 0; i < PTRS; i++){
+		ptrs[i] = 0;
+	}
+
+	if(bio_write(blkno, ptr_blk) < 0){
 		return -1;
 	}
 
@@ -126,6 +160,12 @@ int init_data_structures(){
 	data_blk = malloc(BLOCK_SIZE);
 	if(!data_blk){
 		perror("Malloc failure: data block initialization\n");
+		return -1;
+	}
+
+	ptr_blk = malloc(BLOCK_SIZE);
+	if(!ptr_blk){
+		perror("Malloc failure: pointer block initialization\n");
 		return -1;
 	}
 
@@ -244,6 +284,16 @@ int init_data_block(){
 	return 0;
 }
 
+int init_ptr_block(){
+	ptr_blk = malloc(BLOCK_SIZE);
+	if(!ptr_blk){
+		perror("Malloc failure: pointer block initialization\n");
+		return -1;
+	}
+
+	return 0;
+}
+
 int get_inode_block(uint16_t ino){
 	return ((ino / INODES) + INODE_IDX);
 }
@@ -354,6 +404,20 @@ int writei(uint16_t ino, struct inode *inode) {
 	return 0;
 }
 
+int get_dirent_from_block(void *blk, const char *fname, size_t name_len, struct dirent *dirent){
+	struct dirent *dir_ents = (struct dirent *)blk;
+	for(int i = 0; i < DIRENTS; i++){
+		if(!dir_ents[i].valid){
+			continue;
+		}else if(name_len == dir_ents[i].len && strcmp(dir_ents[i].name, fname) == 0){
+			memcpy(dirent, &dir_ents[i], sizeof(struct dirent));
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
 
 /* 
  * directory operations
@@ -363,28 +427,48 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 	// Step 2: Get data block of current directory from inode
 	// Step 3: Read directory's data block and check each directory entry.
 	// If the name matches, then copy directory entry to dirent structure
-	struct inode dir_node;
-	if(readi(ino, &dir_node) < 0){
+	struct inode dir_inode;
+	if(readi(ino, &dir_inode) < 0){
 		return -1;
 	}
 
-	if(!dir_node.valid || dir_node.size <= 0 || dir_node.type != S_IFDIR){
+	if(!dir_inode.valid || dir_inode.size <= 0 || dir_inode.type != S_IFDIR){
 		return -1;
 	}
 
-	int index = 0;
-	while(index < dir_node.size){
-		int blk_ptr = dir_node.direct_ptr[index++];
-		bio_read(blk_ptr, data_blk);
-
-		struct dirent *dir_ents = (struct dirent *)data_blk;
-
-		for(int i = 0; i < DIRENTS; i++){
-			if(!dir_ents[i].valid){
-				continue;
-			}else if(name_len == dir_ents[i].len && strcmp(dir_ents[i].name, fname) == 0){
-				memcpy(dirent, &dir_ents[i], sizeof(struct dirent));
+	int blk_ptr = 0;
+	int indir_ptr = 0;
+	for(int i = 0; i < 24; i++){
+		if(i < 16){
+			blk_ptr = dir_inode.direct_ptr[i];
+			if(blk_ptr == 0){
+				return -1;
+			}else if(bio_read(blk_ptr, data_blk) < 0){
+				return -1;
+			}
+		
+			if(get_dirent_from_block(data_blk, fname, name_len, dirent)){
 				return 0;
+			}
+		}else if((i - 16) < 8){
+			indir_ptr = dir_inode.indirect_ptr[i - 16];
+			if(indir_ptr == 0){
+				return -1;
+			}else if(bio_read(indir_ptr, ptr_blk) < 0){
+				return -1;
+			}
+
+			int *ptrs = (int *)ptr_blk;
+			for(int i = 0; i < PTRS; i++){
+				if(ptrs[i] == 0){
+					return -1;
+				}else if(bio_read(ptrs[i], data_blk) < 0){
+					return -1;
+				}
+
+				if(get_dirent_from_block(data_blk, fname, name_len, dirent)){
+					return 0;
+				}
 			}
 		}
 	}
@@ -392,19 +476,54 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 	return  -1;
 }
 
-int dir_contains(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t name_len){
-	int index = 0;
-	while(index < dir_inode.size){
-		int blk_ptr = dir_inode.direct_ptr[index++];
-		bio_read(blk_ptr, data_blk);
+int dir_block_contains(void *blk, const char *fname, size_t name_len){
+	struct dirent *dir_ents = (struct dirent *)blk;
+	for(int i = 0; i < DIRENTS; i++){
+		if(!dir_ents[i].valid){
+			continue;
+		}else if(name_len == dir_ents[i].len && strcmp(dir_ents[i].name, fname) == 0){
+			return 1;
+		}
+	}
 
-		struct dirent *dir_ents = (struct dirent *)data_blk;
+	return 0;
+}
 
-		for(int i = 0; i < DIRENTS; i++){
-			if(!dir_ents[i].valid){
-				continue;
-			}else if(name_len == dir_ents[i].len && strcmp(dir_ents[i].name, fname) == 0){
+int dir_contains(struct inode dir_inode, const char *fname, size_t name_len){
+	int blk_ptr = 0;
+	int indir_blk = 0;
+
+	for(int i = 0; i < 24; i++){
+		if(i < 16){
+			blk_ptr = dir_inode.direct_ptr[i];
+			if(blk_ptr == 0){
+				return 0;
+			}else if(bio_read(blk_ptr, data_blk) < 0){
+				return 0;
+			}
+		
+			if(dir_block_contains(data_blk, fname, name_len)){
 				return 1;
+			}
+		}else if((i - 16) < 8){
+			indir_blk = dir_inode.indirect_ptr[i - 16];
+			if(indir_blk == 0){
+				return 0;
+			}else if(bio_read(indir_blk, ptr_blk) < 0){
+				return 0;
+			}
+
+			int *ptrs = (int *)ptr_blk;
+			for(int i = 0; i < PTRS; i++){
+				if(ptrs[i] == 0){
+					continue;
+				}else if(bio_read(ptrs[i], data_blk) < 0){
+					return 0;
+				}
+
+				if(dir_block_contains(data_blk, fname, name_len)){
+					return 1;
+				}
 			}
 		}
 	}
@@ -412,26 +531,67 @@ int dir_contains(struct inode dir_inode, uint16_t f_ino, const char *fname, size
 	return 0;
 }
 
-int add_dir_entry(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t name_len){
-	int index = 0;
+int add_dirent_to_block(void *blk, uint16_t f_ino, const char *fname, size_t name_len){
+	struct dirent *dir_ents = (struct dirent *)blk;
+	for(int i = 0; i < DIRENTS; i++){
+		if(!dir_ents[i].valid){
+			dir_ents[i].ino = f_ino;
+			dir_ents[i].valid = 1;
+			memcpy(&(dir_ents[i].name), fname, name_len);
+			dir_ents[i].len = name_len;
 
-	while(index < dir_inode.size){
-		int blk_ptr = dir_inode.direct_ptr[index++];
-		bio_read(blk_ptr, data_blk);
-		struct dirent *dir_ents = (struct dirent *)data_blk;
+			return 1;
+		}
+	}
 
-		for(int i = 0; i < DIRENTS; i++){
-			if(!dir_ents[i].valid){
-				dir_ents[i].ino = f_ino;
-				dir_ents[i].valid = 1;
-				memcpy(&(dir_ents[i].name), fname, name_len);
-				// dir_ents[i].name = fname;
-				dir_ents[i].len = name_len;
+	return 0;
+}
 
-				return 1;
-			}else{
-				continue;
+
+/*
+ * Adds dirent to a block pointed to by dir_inode if an invalid dirent exists within a block pointed to by dir_inode
+ */
+int add_dirent(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t name_len){
+	int blk_ptr = 0;
+	int indir_blk = 0;
+
+	for(int i = 0; i < 24; i++){
+		// Direct Pointer
+		if(i < 16){
+			blk_ptr = dir_inode.direct_ptr[i];
+			if(blk_ptr == 0){
+				return 0;
+			}else if(bio_read(blk_ptr, data_blk) < 0){
+				return 0;
 			}
+		
+			if(add_dirent_to_block(data_blk, f_ino, fname, name_len) && bio_write(blk_ptr, data_blk)){
+				return 1;
+			}
+
+
+		// Indirect Pointer
+		}else if((i - 16) < 8){
+			indir_blk = dir_inode.indirect_ptr[i - 16];
+			if(indir_blk == 0){
+				return 0;
+			}else if(bio_read(indir_blk, ptr_blk) < 0){
+				return 0;
+			}
+
+			int *ptrs = (int *)ptr_blk;
+			for(int i = 0; i < PTRS; i++){
+				if(ptrs[i] == 0){
+					continue;
+				}else if(bio_read(ptrs[i], data_blk) < 0){
+					return 0;
+				}
+
+				if(add_dirent_to_block(data_blk, f_ino, fname, name_len) && bio_write(ptrs[i], data_blk)){
+					return 1;
+				}
+			}
+
 		}
 	}
 
@@ -445,12 +605,12 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	// Allocate a new data block for this directory if it does not exist
 	// Update directory inode
 	// Write directory entry
-	if(dir_contains(dir_inode, f_ino, fname, name_len) == 0){
+	if(dir_contains(dir_inode, fname, name_len)){
 		return -1;
 	}
 
 	int size = dir_inode.size;
-	if(add_dir_entry(dir_inode, f_ino, fname, name_len) == 0 && size < 16){
+	if(!add_dirent(dir_inode, f_ino, fname, name_len)){
 		int blk_no = get_avail_blkno();
 		if(blk_no == -1){
 			return -1;
@@ -462,23 +622,58 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 		dir_ents[0].ino = f_ino;
 		dir_ents[0].valid = 1;
 		memcpy(&(dir_ents[0].name), fname, name_len);
-		// dir_ents[0].name = fname;
 		dir_ents[0].len = name_len;
-		bio_write(blk_no, data_blk);
 
-		dir_inode.direct_ptr[size] = blk_no;
+		if(bio_write(blk_no, data_blk)< 0){
+			return -1;
+		}
+
+		if(size < 16){
+			dir_inode.direct_ptr[size] = blk_no;
+		}else{
+			int indir_blk = 0;
+			int indir_index = 0;
+
+			if((size - 16) < PTRS){
+				indir_blk = dir_inode.indirect_ptr[0];
+			}else{
+				indir_index = (size - 16) / PTRS;
+				indir_blk = dir_inode.indirect_ptr[indir_index];
+			}
+
+			if(indir_blk == 0){
+				indir_blk = get_avail_blkno();
+				if(indir_blk == -1){
+					return -1;
+				}
+
+				format_ptr_block(indir_blk);
+				dir_inode.indirect_ptr[indir_index] = indir_blk;
+			}
+
+			if(bio_read(indir_blk, ptr_blk) < 0){
+				return -1;
+			}
+
+			int *ptrs = (int *)ptr_blk;
+			int ptr_index = (size - 16) % PTRS;
+			ptrs[ptr_index] = blk_no;
+
+			if(bio_write(indir_blk, ptr_blk) < 0){
+				return -1;
+			}
+		}
+		
 		dir_inode.size++;
 	}
 
 	return 0;
 }
 
+//OPTIONAL
 int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
-
 	// Step 1: Read dir_inode's data block and checks each directory entry of dir_inode
-	
 	// Step 2: Check if fname exist
-
 	// Step 3: If exist, then remove it from dir_inode's data block and write to disk
 
 	return 0;
@@ -488,10 +683,9 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
  * namei operation
  */
 int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
-	
 	// Step 1: Resolve the path name, walk through path, and finally, find its inode.
 	// Note: You could either implement it in a iterative way or recursive way
-
+	
 	return 0;
 }
 
@@ -511,6 +705,7 @@ int rufs_mkfs() {
 		init_inode_bitmap() < 0 || 
 		init_data_bitmap() < 0 ||
 		init_data_block() < 0 ||
+		init_ptr_block() < 0 ||
 		init_inode_region() < 0
 	){
 		return - 1;
@@ -534,6 +729,7 @@ static void *rufs_init(struct fuse_conn_info *conn) {
 		rufs_mkfs();
 	}
 
+	print_macros();
 	return NULL;
 }
 
@@ -558,6 +754,10 @@ static void rufs_destroy(void *userdata) {
 
 	if(data_blk){
 		free(data_blk);
+	}
+
+	if(ptr_blk){
+		free(ptr_blk);
 	}
 
 	dev_close();
@@ -613,6 +813,7 @@ static int rufs_mkdir(const char *path, mode_t mode) {
 	return 0;
 }
 
+//OPTIONAL
 static int rufs_rmdir(const char *path) {
 
 	// Step 1: Use dirname() and basename() to separate parent directory path and target directory name
@@ -687,6 +888,7 @@ static int rufs_write(const char *path, const char *buffer, size_t size, off_t o
 	return size;
 }
 
+//OPTIONAL
 static int rufs_unlink(const char *path) {
 
 	// Step 1: Use dirname() and basename() to separate parent directory path and target file name

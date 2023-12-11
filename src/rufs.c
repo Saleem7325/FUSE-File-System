@@ -682,10 +682,34 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 /* 
  * namei operation
  */
+
+//  int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *dirent) {
+	// Step 1: Call readi() to get the inode using ino (inode number of current directory)
+	// Step 2: Get data block of current directory from inode
+	// Step 3: Read directory's data block and check each directory entry.
+	// If the name matches, then copy directory entry to dirent structure
+
 int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	// Step 1: Resolve the path name, walk through path, and finally, find its inode.
 	// Note: You could either implement it in a iterative way or recursive way
-	
+	char *pth_cpy = (char *)malloc(strlen(path) + 1);
+	memcpy(pth_cpy, path, strlen(path) + 1);
+
+	struct dirent dir_ent;
+	int curr_ino = ino;
+	char *token = strtok(pth_cpy, "/");
+
+	while(token != NULL) {
+		int found = dir_find(curr_ino, token, strlen(token), &dir_ent);
+		if(found == -1){
+			return -1;
+		}
+
+		curr_ino = dir_ent.ino;
+        token = strtok(NULL, "/");
+    }
+
+	readi(curr_ino, inode);
 	return 0;
 }
 

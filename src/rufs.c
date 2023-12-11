@@ -790,13 +790,35 @@ static void rufs_destroy(void *userdata) {
 static int rufs_getattr(const char *path, struct stat *stbuf) {
 
 	// Step 1: call get_node_by_path() to get inode from path
+	struct inode inode;
+	int err;
+
+	err = get_node_by_path(path, 0, &inode);
+	if (err < 0) {
+		return -ENOENT; //error code for no such file exist
+	}
+
+	// Check the validity of the inode
+    if (inode.valid != 1) {
+        return -ENOENT; // Not a valid inode
+    }
 
 	// Step 2: fill attribute of file into stbuf from inode
-
-		stbuf->st_mode   = S_IFDIR | 0755;
+	if (inode.type == S_IFDIR) { //dir type
+		stbuf->st_mode   = S_IFDIR | 0755; //default permission for dir
 		stbuf->st_nlink  = 2;
-		time(&stbuf->st_mtime);
+	} else if (inode.type == S_IFREG) { //regular file type
+		stbuf->st_mode = S_IFREG | 0644; //default permission for regular file
+		stbuf->st_nlink = 1;
+	}
 
+	stbuf->st_size = inode.size;
+	
+	time(&stbuf->st_mtime);
+		
+	//set no. of (size.. eg. 512 byte) blocks allocated for the file
+	//stbuf->st_blocks = (inode.size + 511) / 512; //uncomment this with correct calculation.
+	//st_blocks represent the number of 512 bytes blocks allocated for the file.
 	return 0;
 }
 

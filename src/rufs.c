@@ -572,6 +572,7 @@ int add_dirent(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t
 			}
 		
 			if(add_dirent_to_block(data_blk, f_ino, fname, name_len) && bio_write(blk_ptr, data_blk)){
+				dir_inode.link++;
 				return 1;
 			}
 
@@ -594,6 +595,7 @@ int add_dirent(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t
 				}
 
 				if(add_dirent_to_block(data_blk, f_ino, fname, name_len) && bio_write(ptrs[i], data_blk)){
+					dir_inode.link++;
 					return 1;
 				}
 			}
@@ -633,6 +635,7 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 		if(bio_write(blk_no, data_blk)< 0){
 			return -1;
 		}
+		dir_inode.link++;
 
 		if(size < 16){
 			dir_inode.direct_ptr[size] = blk_no;
@@ -691,6 +694,11 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	// Step 1: Resolve the path name, walk through path, and finally, find its inode.
 	// Note: You could either implement it in a iterative way or recursive way
+	if(strcmp(path, "/" ) == 0 && ino == 0){
+		readi(0, inode);
+		return 0;
+	}
+
 	char *pth_cpy = (char *)malloc(strlen(path) + 1);
 	memcpy(pth_cpy, path, strlen(path) + 1);
 
@@ -786,17 +794,6 @@ static void rufs_destroy(void *userdata) {
 	dev_close();
 }
 
-
-    
-    // mode_t    st_mode;    /* protection */
-    // nlink_t   st_nlink;   /* number of hard links */
-    // uid_t     st_uid;     /* user ID of owner */
-    // gid_t     st_gid;     /* group ID of owner */
-    // dev_t     st_rdev;    /* device ID (if special file) */
-    // off_t     st_size;    /* total size, in bytes */
-    // blkcnt_t  st_blocks;  /* number of 512B blocks allocated */
-    // time_t    st_atime;   /* time of last access */
-    // time_t    st_mtime;   /* time of last modification */
 static int rufs_getattr(const char *path, struct stat *stbuf) {
 	// Step 1: call get_node_by_path() to get inode from path
 	struct inode node;
@@ -830,19 +827,72 @@ static int rufs_getattr(const char *path, struct stat *stbuf) {
 }
 
 static int rufs_opendir(const char *path, struct fuse_file_info *fi) {
-
 	// Step 1: Call get_node_by_path() to get inode from path
-
 	// Step 2: If not find, return -1
+	struct inode node;
+	int err;
+	err = get_node_by_path(path, 0, &node);
+
+	if(err < 0){
+		return -ENOENT;
+	}
 
     return 0;
 }
 
+void copy_names_to_buffer(void *blk, void *buffer, fuse_fill_dir_t filler){
+	struct dirent *dir_ents = (struct dirent *)blk;
+
+	for(int i = 0; i < DIRENTS; i++){
+		if(dir_ents[i].valid){
+			filler(buffer, (char *)&dir_ents[i].name, NULL, 0);
+		}
+	}
+}
+
 static int rufs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
-
 	// Step 1: Call get_node_by_path() to get inode from path
-
 	// Step 2: Read directory entries from its data blocks, and copy them to filler
+	struct inode node;
+	int err;
+
+	err = get_node_by_path(path, 0, &node);
+	if(err < 0){
+		return -ENOENT;
+	}
+
+	int blk_ptr = 0;
+	int indir_blk = 0;
+	for(int i = 0; i < 24; i++){
+		if(i < 16){
+			blk_ptr = node.direct_ptr[i];
+			if(blk_ptr == 0){
+				break;
+			}else if(bio_read(blk_ptr, data_blk) < 0){
+				return -1;
+			}
+		
+			copy_names_to_buffer(data_blk, buffer, filler);
+		}else{
+			indir_blk = node.indirect_ptr[i - 16];
+			if(indir_blk == 0){
+				break;
+			}else if(bio_read(indir_blk, ptr_blk) < 0){
+				return -1;
+			}
+
+			int *ptrs = (int *)ptr_blk;
+			for(int i = 0; i < PTRS; i++){
+				if(ptrs[i] == 0){
+					break;
+				}else if(bio_read(ptrs[i], data_blk) < 0){
+					return -1;
+				}
+
+				copy_names_to_buffer(data_blk, buffer, filler);
+			}
+		}
+	}
 
 	return 0;
 }

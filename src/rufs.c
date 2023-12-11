@@ -254,9 +254,15 @@ int init_inode_region(){
 	inode_blk[ino].type = S_IFDIR;
 	inode_blk[ino].link = 0;
 	inode_blk[ino].direct_ptr[0] = blk_no;
+	time(&(inode_blk[ino].vstat.st_atime));
+	time(&(inode_blk[ino].vstat.st_mtime));
 
-	for(int i = 1; i < 16; i++){
-		inode_blk[ino].direct_ptr[i] = 0;
+	for(int i = 1; i < 24; i++){
+		if(i < 16){
+			inode_blk[ino].direct_ptr[i] = 0;
+		}else{
+			inode_blk[ino].indirect_ptr[i - 16] = 0;
+		}
 	}
 
 	if(bio_write(INODE_IDX, inode_blk) < 0){
@@ -682,13 +688,6 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 /* 
  * namei operation
  */
-
-//  int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *dirent) {
-	// Step 1: Call readi() to get the inode using ino (inode number of current directory)
-	// Step 2: Get data block of current directory from inode
-	// Step 3: Read directory's data block and check each directory entry.
-	// If the name matches, then copy directory entry to dirent structure
-
 int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	// Step 1: Resolve the path name, walk through path, and finally, find its inode.
 	// Note: You could either implement it in a iterative way or recursive way
@@ -787,38 +786,46 @@ static void rufs_destroy(void *userdata) {
 	dev_close();
 }
 
-static int rufs_getattr(const char *path, struct stat *stbuf) {
 
+    
+    // mode_t    st_mode;    /* protection */
+    // nlink_t   st_nlink;   /* number of hard links */
+    // uid_t     st_uid;     /* user ID of owner */
+    // gid_t     st_gid;     /* group ID of owner */
+    // dev_t     st_rdev;    /* device ID (if special file) */
+    // off_t     st_size;    /* total size, in bytes */
+    // blkcnt_t  st_blocks;  /* number of 512B blocks allocated */
+    // time_t    st_atime;   /* time of last access */
+    // time_t    st_mtime;   /* time of last modification */
+static int rufs_getattr(const char *path, struct stat *stbuf) {
 	// Step 1: call get_node_by_path() to get inode from path
-	struct inode inode;
+	struct inode node;
 	int err;
 
-	err = get_node_by_path(path, 0, &inode);
+	err = get_node_by_path(path, 0, &node);
 	if (err < 0) {
 		return -ENOENT; //error code for no such file exist
 	}
 
-	// Check the validity of the inode
-    if (inode.valid != 1) {
-        return -ENOENT; // Not a valid inode
-    }
-
 	// Step 2: fill attribute of file into stbuf from inode
-	if (inode.type == S_IFDIR) { //dir type
+	if (node.type == S_IFDIR) { //dir type
 		stbuf->st_mode   = S_IFDIR | 0755; //default permission for dir
 		stbuf->st_nlink  = 2;
-	} else if (inode.type == S_IFREG) { //regular file type
+	} else if (node.type == S_IFREG) { //regular file type
 		stbuf->st_mode = S_IFREG | 0644; //default permission for regular file
 		stbuf->st_nlink = 1;
 	}
 
-	stbuf->st_size = inode.size;
+	// Update size (bytes), size (512 blocks), uid, gid
+	stbuf->st_size = node.size * BLOCK_SIZE;
+	stbuf->st_blocks = (stbuf->st_size % 512 == 0) ? (stbuf->st_size / 512) : ((stbuf->st_size / 512) + 1);
+	stbuf->st_uid = getuid();
+	stbuf->st_gid = getgid();
+
+	// Copy last access and modification time from inode.vstat to st_buf 
+	stbuf->st_atime = node.vstat.st_atime;
+	stbuf->st_mtime = node.vstat.st_mtime;
 	
-	time(&stbuf->st_mtime);
-		
-	//set no. of (size.. eg. 512 byte) blocks allocated for the file
-	//stbuf->st_blocks = (inode.size + 511) / 512; //uncomment this with correct calculation.
-	//st_blocks represent the number of 512 bytes blocks allocated for the file.
 	return 0;
 }
 

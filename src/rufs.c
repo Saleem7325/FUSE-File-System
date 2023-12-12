@@ -103,7 +103,7 @@ int format_dir_block(int blkno){
 		return -1;
 	}
 
-	struct dirent * dirents = (struct dirent *)data_blk;
+	struct dirent *dirents = (struct dirent *)data_blk;
 	for(int i = 0; i < DIRENTS; i++){
 		dirents[i].valid = 0;
 	}
@@ -254,6 +254,23 @@ int init_inode_region(){
 	inode_blk[ino].type = S_IFDIR;
 	inode_blk[ino].link = 0;
 	inode_blk[ino].direct_ptr[0] = blk_no;
+
+	if(bio_read(blk_no, data_blk) < 0){
+		return -1;
+	}
+
+	struct dirent *dir_ents = (struct dirent *)data_blk;
+	dir_ents[0].ino = ino;
+	dir_ents[0].valid = 1;
+
+	char name[2] = ".";
+	memcpy(dir_ents[0].name, &name, 2);
+	dir_ents[0].len = strlen((char *)&name);
+
+	if(bio_write(blk_no, data_blk) < 0){
+		return -1;
+	}
+
 	time(&(inode_blk[ino].vstat.st_atime));
 	time(&(inode_blk[ino].vstat.st_mtime));
 
@@ -540,10 +557,10 @@ int dir_contains(struct inode dir_inode, const char *fname, size_t name_len){
 int add_dirent_to_block(void *blk, uint16_t f_ino, const char *fname, size_t name_len){
 	struct dirent *dir_ents = (struct dirent *)blk;
 	for(int i = 0; i < DIRENTS; i++){
-		if(!dir_ents[i].valid){
+		if(dir_ents[i].valid == 0){
 			dir_ents[i].ino = f_ino;
 			dir_ents[i].valid = 1;
-			memcpy(&(dir_ents[i].name), fname, name_len);
+			memcpy(&(dir_ents[i].name), fname, name_len + 1);
 			dir_ents[i].len = name_len;
 
 			return 1;
@@ -594,7 +611,7 @@ int add_dirent(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t
 					return 0;
 				}
 
-				if(add_dirent_to_block(data_blk, f_ino, fname, name_len) && bio_write(ptrs[i], data_blk)){
+				if(add_dirent_to_block(data_blk, f_ino, fname, name_len) && bio_write(ptrs[i], data_blk) >= 0){
 					dir_inode.link++;
 					return 1;
 				}
@@ -625,6 +642,9 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 		}
 
 		format_dir_block(blk_no);
+		if(bio_read(blk_no, data_blk)< 0){
+			return -1;
+		}
 		struct dirent *dir_ents = (struct dirent *)data_blk;
 
 		dir_ents[0].ino = f_ino;
@@ -672,7 +692,8 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 				return -1;
 			}
 		}
-		
+
+		writei(dir_inode.ino, &dir_inode);
 		dir_inode.size++;
 	}
 
@@ -694,6 +715,8 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	// Step 1: Resolve the path name, walk through path, and finally, find its inode.
 	// Note: You could either implement it in a iterative way or recursive way
+	// printf("get_node_by_path(): %s\n", path);
+
 	if(strcmp(path, "/" ) == 0 && ino == 0){
 		readi(0, inode);
 		return 0;
@@ -716,6 +739,7 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
         token = strtok(NULL, "/");
     }
 
+	free(pth_cpy);
 	readi(curr_ino, inode);
 	return 0;
 }
@@ -940,20 +964,85 @@ static int rufs_releasedir(const char *path, struct fuse_file_info *fi) {
     return 0;
 }
 
+char *get_dirname(const char *path){
+	char *pth_cpy = (char *)malloc(strlen(path) + 1);
+	memcpy(pth_cpy, path, strlen(path) + 1);
+
+	char *dname = dirname(pth_cpy);
+	char *ret = (char *)malloc(strlen(dname) + 1);
+	memcpy(ret, dname, strlen(dname) + 1);
+
+	printf("dirname: %s\n", ret);
+	free(pth_cpy);
+	return ret;
+}
+
+char *get_filename(const char *path){
+	char *pth_cpy = (char *)malloc(strlen(path) + 1);
+	memcpy(pth_cpy, path, strlen(path) + 1);
+
+	char *fname = basename(pth_cpy);
+	char *ret = (char *)malloc(strlen(fname) + 1);
+	memcpy(ret, fname, strlen(fname) + 1);
+
+	printf("filename: %s\n", ret);
+	free(pth_cpy);
+	return ret;
+}
+
 static int rufs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
-
 	// Step 1: Use dirname() and basename() to separate parent directory path and target file name
-
 	// Step 2: Call get_node_by_path() to get inode of parent directory
-
 	// Step 3: Call get_avail_ino() to get an available inode number
-
 	// Step 4: Call dir_add() to add directory entry of target file to parent directory
-
 	// Step 5: Update inode for target file
-
 	// Step 6: Call writei() to write inode to disk
+	char *parent = get_dirname(path);
+	char *file = get_filename(path);
+	printf("parent: %s\n", parent);
+	printf("filename: %s\n", file);
+	struct inode prnt_node;
+	int err;
 
+	err = get_node_by_path(parent, 0, &prnt_node);
+	if(err < 0){
+		return -ENOENT;
+	}
+
+	struct inode file_node;
+	int f_ino = get_avail_ino();
+	if(f_ino == -1){
+		free(parent);
+		free(file);
+		return -1;
+	}
+
+	file_node.ino = f_ino;
+	file_node.valid = 1;
+	file_node.type = S_IFREG;
+	file_node.size = 0;
+	file_node.link = 1;
+	time(&(file_node.vstat.st_atime));
+	time(&(file_node.vstat.st_mtime));
+
+	for(int i = 0; i < 24; i++){
+		if(i < 16){
+			file_node.direct_ptr[i] = 0;
+		}else{
+			file_node.indirect_ptr[i - 16] = 0;
+		}
+	}
+
+	if(dir_add(prnt_node, f_ino, file, strlen(file)) == -1){
+		// going to need to unset inode bitmap if fail
+		free(parent);
+		free(file);
+		return -1;
+	}
+
+	writei(f_ino, &file_node);
+	free(parent);
+	free(file);
 	return 0;
 }
 

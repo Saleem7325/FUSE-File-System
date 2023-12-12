@@ -1,6 +1,30 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <libgen.h>
+
+// char *get_parent(char *path){
+//     if(!path || strcmp(path, "/") == 0){
+//         return "/";
+//     }
+
+//     int len = strlen(path);
+
+//     for(int i = len - 1; i >= 0; i++){
+//         if(cpy[i] != '/'){
+//             cpy[i] = '';
+//         }else{
+//             break;
+//         }
+//     }
+
+//     char cpy[len];
+//     printf("\nParent: %s\n", cpy);
+// }
+
+// char *get_file_w_path(char *){
+
+// }
 
 int main(int argc, char **argv) {
     char p1[50] = "/this/is/a/path/";
@@ -10,30 +34,30 @@ int main(int argc, char **argv) {
     printf("Path: %s\n", p1);
 
     char *token = strtok(path1, "/");
-    // printf("Path: %s\n", path1);
+    printf("Path: %s\n", path1);
 
     while(token != NULL) {
-        printf( "%s len: %ld\n", token, strlen(token));
+        printf( "%s\n", token);
         token = strtok(NULL, "/");
     }
 
-    // char p2[50] = "/path";
-    // char path2[50];
+    char *pa1 = malloc(17);
+    char str[17] = "/this/is/a/path/";
+    memcpy(pa1, str, 17);
 
-    // memcpy(&path2, &p2, 50);
-    // printf("\nPath: %s\n", p2);
 
-    // token = strtok(path2, "/");
-    // // printf("Path: %s\n", path2);
-    
-    // while(token != NULL) {
-    //     printf( "%s\n", token );
-    //     token = strtok(NULL, "/");
-    // }
+    char *parent = dirname(pa1);
+    char *file = basename(str);
+    printf("\nParent: %s\nBasename: %s\n", parent, file);
+    free(pa1);
 
-    // char *ptr = malloc(7);
-    // char string[] = "string";
-    // memcpy(ptr, &string, strlen(string));
-    // printf("\nString: %ld\n", strlen(ptr));
+    char *pa2 = malloc(6);
+    char str1[6] = "/file";
+    memcpy(pa2, str, 6);
 
+    char *parent1 = dirname(pa2);
+    char *file1 = basename(str1);
+    printf("\nParent: %s\nBasename: %s\n", parent1, file1);
+    free(pa1);
+    return 0;
 }

@@ -85,6 +85,8 @@ bitmap_t blk_bmap = NULL;
 
 int get_avail_ino();
 int get_avail_blkno();
+char *get_dirname(const char *path);
+char *get_basename(const char *path);
 
 void print_macros(){
 	printf("\n______________________MACROS______________________\n");
@@ -921,22 +923,101 @@ static int rufs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, 
 	return 0;
 }
 
+int format_new_dir(struct inode*dir_node, uint16_t parent_ino){
+	if(!dir_node){
+		return 0;
+	}
+
+	if(dir_node->size == 0){
+		int blkno = get_avail_blkno();
+		if(blkno == -1){
+			return 0;
+		}
+
+		format_dir_block(blkno);
+		dir_node->direct_ptr[0] = blkno;
+		if(bio_read(blkno, data_blk) < 0){
+			return 0;
+		}
+
+		struct dirent *dir_ents = (struct dirent *)data_blk; 
+		dir_ents[0].ino = dir_node->ino;
+		dir_ents[0].valid = 1;
+
+		char dir_name[2] = ".";
+		memcpy(dir_ents[0].name, &dir_name, 2);
+		dir_ents[0].len = strlen((char *)&dir_name);
+
+		dir_ents[1].ino = parent_ino;
+		dir_ents[1].valid = 1;
+
+		char par_name[3] = "..";
+		memcpy(dir_ents[1].name, &par_name, 3);
+		dir_ents[1].len = strlen((char *)&par_name);
+
+		if(bio_write(blkno, data_blk) < 0){
+			return 0;
+		}
+
+		dir_node->size++;
+		return 1;
+	}
+
+	return 0;
+}
 
 static int rufs_mkdir(const char *path, mode_t mode) {
-
 	// Step 1: Use dirname() and basename() to separate parent directory path and target directory name
-
 	// Step 2: Call get_node_by_path() to get inode of parent directory
-
 	// Step 3: Call get_avail_ino() to get an available inode number
-
 	// Step 4: Call dir_add() to add directory entry of target directory to parent directory
-
 	// Step 5: Update inode for target directory
-
 	// Step 6: Call writei() to write inode to disk
-	
+	char *parent = get_dirname(path);
+	char *dir = get_basename(path);
+	struct inode prnt_node;
+	int err;
 
+	err = get_node_by_path(parent, 0, &prnt_node);
+	if(err < 0){
+		return -ENOENT;
+	}
+
+	struct inode dnode;
+	int dino = get_avail_ino();
+	if(dino == -1){
+		free(parent);
+		free(dir);
+		return -1;
+	}
+
+	dnode.ino = dino;
+	dnode.valid = 1;
+	dnode.type = S_IFDIR;
+	dnode.size = 0;
+	dnode.link = 2;
+	time(&(dnode.vstat.st_atime));
+	time(&(dnode.vstat.st_mtime));
+
+	for(int i = 0; i < 24; i++){
+		if(i < 16){
+			dnode.direct_ptr[i] = 0;
+		}else{
+			dnode.indirect_ptr[i - 16] = 0;
+		}
+	}
+
+	if(dir_add(prnt_node, dino, dir, strlen(dir)) == -1){
+		// going to need to unset inode bitmap if fail
+		free(parent);
+		free(dir);
+		return -1;
+	}
+
+	format_new_dir(&dnode, prnt_node.ino);
+	writei(dino, &dnode);
+	free(parent);
+	free(dir);
 	return 0;
 }
 
@@ -977,15 +1058,15 @@ char *get_dirname(const char *path){
 	return ret;
 }
 
-char *get_filename(const char *path){
+char *get_basename(const char *path){
 	char *pth_cpy = (char *)malloc(strlen(path) + 1);
 	memcpy(pth_cpy, path, strlen(path) + 1);
 
-	char *fname = basename(pth_cpy);
-	char *ret = (char *)malloc(strlen(fname) + 1);
-	memcpy(ret, fname, strlen(fname) + 1);
+	char *bname = basename(pth_cpy);
+	char *ret = (char *)malloc(strlen(bname) + 1);
+	memcpy(ret, bname, strlen(bname) + 1);
 
-	printf("filename: %s\n", ret);
+	printf("basename: %s\n", ret);
 	free(pth_cpy);
 	return ret;
 }
@@ -998,9 +1079,9 @@ static int rufs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	// Step 5: Update inode for target file
 	// Step 6: Call writei() to write inode to disk
 	char *parent = get_dirname(path);
-	char *file = get_filename(path);
-	printf("parent: %s\n", parent);
-	printf("filename: %s\n", file);
+	char *file = get_basename(path);
+	// printf("parent: %s\n", parent);
+	// printf("filename: %s\n", file);
 	struct inode prnt_node;
 	int err;
 
@@ -1047,10 +1128,15 @@ static int rufs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 }
 
 static int rufs_open(const char *path, struct fuse_file_info *fi) {
-
 	// Step 1: Call get_node_by_path() to get inode from path
-
 	// Step 2: If not find, return -1
+	struct inode node;
+	int err;
+	err = get_node_by_path(path, 0, &node);
+
+	if(err < 0){
+		return -ENOENT;
+	}
 
 	return 0;
 }

@@ -606,7 +606,7 @@ int add_dirent(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t
 				return 0;
 			}
 		
-			if(add_dirent_to_block(data_blk, f_ino, fname, name_len) && bio_write(blk_ptr, data_blk)){
+			if(add_dirent_to_block(data_blk, f_ino, fname, name_len) && bio_write(blk_ptr, data_blk) >= 0){
 				dir_inode.link++;
 				return 1;
 			}
@@ -710,9 +710,10 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 				return -1;
 			}
 		}
-
-		writei(dir_inode.ino, &dir_inode);
+		
 		dir_inode.size++;
+		writei(dir_inode.ino, &dir_inode);
+
 	}
 
 	return 0;
@@ -850,9 +851,11 @@ static int rufs_getattr(const char *path, struct stat *stbuf) {
 	if (node.type == S_IFDIR) { //dir type
 		stbuf->st_mode   = S_IFDIR | 0755; //default permission for dir
 		stbuf->st_nlink  = 2;
+		// stbuf->st_nlink  = node.link;
 	} else if (node.type == S_IFREG) { //regular file type
 		stbuf->st_mode = S_IFREG | 0644; //default permission for regular file
 		stbuf->st_nlink = 1;
+		// stbuf->st_nlink  = node.link;
 	}
 
 	// Update size (bytes), size (512 blocks), uid, gid
@@ -1162,7 +1165,7 @@ static int rufs_read(const char *path, char *buffer, size_t size, off_t offset, 
 	// Step 2: Based on size and offset, read its data blocks from disk
 	// Step 3: copy the correct amount of data from offset to buffer
 	// Note: this function should return the amount of bytes you copied to buffer
-	if(!path || (size + offset) >= MAX_FSIZE){
+	if(!path || (size + offset) > MAX_FSIZE){
 		return -1;
 	}
 
@@ -1192,7 +1195,7 @@ static int rufs_read(const char *path, char *buffer, size_t size, off_t offset, 
 			return -1;
 		}
 
-		if(bytes_till_nxt > bytes_left){
+		if(bytes_till_nxt >= bytes_left){
 			memcpy((buffer + bytes_read), (data + blk_ofs), bytes_left);
 			bytes_read += bytes_left;
 			break;
@@ -1218,7 +1221,7 @@ static int rufs_write(const char *path, const char *buffer, size_t size, off_t o
 	// Step 3: Write the correct amount of data from offset to disk
 	// Step 4: Update the inode info and write it to disk
 	// Note: this function should return the amount of bytes you write to disk
-	if(!path || (size + offset) >= MAX_FSIZE){
+	if(!path || (size + offset) > MAX_FSIZE){
 		return -1;
 	}
 
@@ -1268,7 +1271,7 @@ static int rufs_write(const char *path, const char *buffer, size_t size, off_t o
 			return -1;
 		}
 
-		if(bytes_till_nxt > bytes_left){
+		if(bytes_till_nxt >= bytes_left){
 			memcpy((data + blk_ofs), (buffer + bytes_written), bytes_left);
 			bytes_written += bytes_left;
 			break;

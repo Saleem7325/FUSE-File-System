@@ -2,5 +2,5 @@ make clean
 cd benchmark/
 make clean
 cd ..
-fusermount -u /tmp/sk2304/mountdir
-
+fusermount -u /tmp/csp126/mountdir
+rm DISKFILE

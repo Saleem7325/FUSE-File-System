@@ -4,5 +4,5 @@ cd benchmark
 make clean
 make
 cd ..
-./rufs -s -d /tmp/sk2304/mountdir
+./rufs -s -d /tmp/csp126/mountdir
 

@@ -7,9 +7,10 @@
 #include <string.h>
 #include <sys/types.h>
 #include <dirent.h>
+#include <sys/time.h>
 
 /* You need to change this macro to your TFS mount point*/
-#define TESTDIR "/tmp/sk2304/mountdir"
+#define TESTDIR "/tmp/csp126/mountdir"
 
 #define N_FILES 100
 #define BLOCKSIZE 4096
@@ -19,9 +20,13 @@
 #define DIRPERM 0755
 
 char buf[BLOCKSIZE];
+//adding time var
+struct timeval start, end;
+double time_taken;
 
 int main(int argc, char **argv) {
 
+	gettimeofday(&start, NULL);
 	int i, fd = 0, ret = 0;
 	struct stat st;
 
@@ -112,6 +117,12 @@ int main(int argc, char **argv) {
 	
 	printf("TEST 6: Sub-directory create success \n");
 
-	printf("Benchmark completed \n");
+	
+	gettimeofday(&end, NULL);
+	//total time taken in milliseconds
+    time_taken = (end.tv_sec - start.tv_sec) * 1000.0;
+    time_taken += (end.tv_usec - start.tv_usec) / 1000.0;
+
+    printf("Benchmark completed in %f milliseconds\n", time_taken);
 	return 0;
 }

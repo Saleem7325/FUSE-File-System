@@ -89,6 +89,7 @@ int get_avail_ino();
 int get_avail_blkno();
 char *get_dirname(const char *path);
 char *get_basename(const char *path);
+int total_blocks_used();
 
 void print_macros(){
 	printf("\n______________________MACROS______________________\n");
@@ -99,6 +100,7 @@ void print_macros(){
 	printf("Inode blocks: %ld\n", INODE_BLOCKS);
 	printf("Inodes per block: %ld\n", INODES);
 	printf("Data region index: %ld\n", DATA_IDX);
+	printf("Total blocks used after operation: %d\n", total_blocks_used());
 	printf("____________________END MACROS____________________\n\n");
 }
 
@@ -342,6 +344,24 @@ int get_inode_block(uint16_t ino){
 int get_inode_offset(uint16_t ino){
 	return (ino % INODES);
 }
+
+
+int total_blocks_used() {
+    int total_blocks = 0;
+
+    //read the data block bitmap and count used data blocks
+    if (bio_read(DBMAP_IDX, blk_bmap) < 0) {
+        return -1;
+    }
+
+    for (int i = 0; i < MAX_DNUM; i++) {
+        if (get_bitmap(blk_bmap, i) != 0) {
+            total_blocks++;
+        }
+    }
+    return total_blocks;
+}
+
 
 /*_______________________RUFS FUNCTIONS_______________________*/
 
@@ -1028,6 +1048,7 @@ static int rufs_mkdir(const char *path, mode_t mode) {
 
 	if(dir_add(prnt_node, dino, dir, strlen(dir)) == -1){
 		// going to need to unset inode bitmap if fail
+		//printf("Total blocks used after operation: %d\n", total_blocks_used());
 		free(parent);
 		free(dir);
 		return -1;
@@ -1035,6 +1056,7 @@ static int rufs_mkdir(const char *path, mode_t mode) {
 
 	format_new_dir(&dnode, prnt_node.ino);
 	writei(dino, &dnode);
+	//printf("Total blocks used after operation: %d\n", total_blocks_used());
 	free(parent);
 	free(dir);
 	return 0;

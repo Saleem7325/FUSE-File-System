@@ -44,6 +44,8 @@
 
 #define PTRS (BLOCK_SIZE / sizeof(int))
 
+#define MAX_FSIZE (16 * BLOCK_SIZE)
+
 /* Index of super block */
 #define SU_BLK_IDX 0
 
@@ -128,6 +130,20 @@ int format_ptr_block(int blkno){
 	}
 
 	if(bio_write(blkno, ptr_blk) < 0){
+		return -1;
+	}
+
+	return 0;
+}
+
+int format_data_block(int blkno){
+	if(bio_read(blkno, data_blk) < 0){
+		return -1;
+	}
+
+	memset(data_blk, '\0', BLOCK_SIZE);
+
+	if(bio_write(blkno, data_blk) < 0){
 		return -1;
 	}
 
@@ -1142,28 +1158,137 @@ static int rufs_open(const char *path, struct fuse_file_info *fi) {
 }
 
 static int rufs_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
-
 	// Step 1: You could call get_node_by_path() to get inode from path
-
 	// Step 2: Based on size and offset, read its data blocks from disk
-
 	// Step 3: copy the correct amount of data from offset to buffer
-
 	// Note: this function should return the amount of bytes you copied to buffer
-	return 0;
+	if(!path || (size + offset) >= MAX_FSIZE){
+		return -1;
+	}
+
+	struct inode node;
+	int err;
+	err = get_node_by_path(path, 0, &node);
+	if(err < 0){
+		return -ENOENT;
+	}
+
+	int f_size = (node.size * BLOCK_SIZE);
+	int blk_index = (offset / BLOCK_SIZE);
+	int blk_ofs = (offset % BLOCK_SIZE);
+
+	if(f_size < (size + offset)){
+		return 0;
+	}
+
+	int bytes_read = 0;
+	int bytes_left = size;
+	int bytes_till_nxt = (BLOCK_SIZE - blk_ofs);
+	char *data = (char *)data_blk;
+
+	while(bytes_left > 0){
+		int blkno = node.direct_ptr[blk_index];
+		if(bio_read(blkno, data_blk) < 0){
+			return -1;
+		}
+
+		if(bytes_till_nxt > bytes_left){
+			memcpy((buffer + bytes_read), (data + blk_ofs), bytes_left);
+			bytes_read += bytes_left;
+			break;
+		}
+
+		if(bytes_left > bytes_till_nxt){
+			memcpy((buffer + bytes_read), (data + blk_ofs), bytes_till_nxt);
+			bytes_left -= bytes_till_nxt;
+			bytes_read += bytes_till_nxt;
+			blk_ofs = 0;
+		}
+
+		blk_index++;
+		bytes_till_nxt = (BLOCK_SIZE - blk_ofs);
+	}
+
+	return bytes_read;
 }
 
 static int rufs_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
 	// Step 1: You could call get_node_by_path() to get inode from path
-
 	// Step 2: Based on size and offset, read its data blocks from disk
-
 	// Step 3: Write the correct amount of data from offset to disk
-
 	// Step 4: Update the inode info and write it to disk
-
 	// Note: this function should return the amount of bytes you write to disk
-	return size;
+	if(!path || (size + offset) >= MAX_FSIZE){
+		return -1;
+	}
+
+	struct inode node;
+	int err;
+	err = get_node_by_path(path, 0, &node);
+	if(err < 0){
+		return -ENOENT;
+	}
+
+	int f_size = (node.size * BLOCK_SIZE);
+	int blk_index = (offset / BLOCK_SIZE);
+	int blk_ofs = (offset % BLOCK_SIZE);
+
+	if(f_size < (size + offset)){
+		for(int i = 0; i < 16; i++){
+			if(node.direct_ptr[i] == 0){
+				int blkno = get_avail_blkno();
+				if(blkno == -1){
+					return -1;
+				}
+
+				format_data_block(blkno);
+				node.direct_ptr[i] = blkno;
+				node.size++;
+				f_size = (node.size * BLOCK_SIZE);
+			}else{
+				continue;
+			}
+
+			if(f_size > (size + offset)){
+				break;
+			}
+		}
+
+		writei(node.ino, &node);
+	}
+
+	int bytes_written = 0;
+	int bytes_left = size;
+	int bytes_till_nxt = (BLOCK_SIZE - blk_ofs);
+	char *data = (char *)data_blk;
+
+	while(bytes_left > 0){
+		int blkno = node.direct_ptr[blk_index];
+		if(bio_read(blkno, data_blk) < 0){
+			return -1;
+		}
+
+		if(bytes_till_nxt > bytes_left){
+			memcpy((data + blk_ofs), (buffer + bytes_written), bytes_left);
+			bytes_written += bytes_left;
+			break;
+		}
+
+		if(bytes_left > bytes_till_nxt){
+			memcpy((data + blk_ofs), (buffer + bytes_written), bytes_till_nxt);
+			bytes_left -= bytes_till_nxt;
+			bytes_written += bytes_till_nxt;
+			blk_ofs = 0;
+		}
+
+		blk_index++;
+		bytes_till_nxt = (BLOCK_SIZE - blk_ofs);
+		if(bio_write(blkno, data) < 0){
+			return -1;
+		}
+	}
+
+	return bytes_written;
 }
 
 //OPTIONAL
